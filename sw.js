@@ -1,5 +1,5 @@
 // Bump CACHE_VERSION whenever you change index.html so phones pick up the update.
-const CACHE_VERSION = "timebox-v1";
+const CACHE_VERSION = "timebox-v2";
 const ASSETS = [
   "./",
   "./index.html",

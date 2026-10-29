@@ -163,9 +163,16 @@ select, input[type="text"], textarea { border: 1px solid var(--border); border-r
 .task { border: 1px solid var(--border); border-radius: 9px; padding: 6px 8px 8px; display: flex; flex-direction: column; gap: 4px; background: var(--card); }
 .task.done { background: var(--done-bg); border-color: var(--done-border); color: var(--done-fg); }
 .task-top { display: flex; align-items: center; justify-content: space-between; height: 16px; }
-.grip { border: 0; background: transparent; padding: 0 2px; border-radius: 4px; cursor: grab; opacity: .7; line-height: 0; }
+.grip { border: 0; background: transparent; padding: 0 2px; border-radius: 4px; cursor: grab; opacity: .7; line-height: 0;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .grip:hover, .grip:focus-visible { opacity: 1; }
 .grip svg { width: 16px; height: 16px; }
+/* bigger finger-sized hit area for the drag handle on touchscreens (layout size unchanged) */
+@media (pointer: coarse) { .grip { padding: 8px 12px; margin: -8px -10px; } }
+/* drag and drop (pointer events: mouse, touch, pen) */
+.task.drag-src { opacity: .35; }
+.task-ghost { position: fixed; z-index: 300; margin: 0; pointer-events: none; box-shadow: var(--shadow); opacity: .95; transform: rotate(1.5deg); list-style: none; }
+body.is-dragging { user-select: none; -webkit-user-select: none; cursor: grabbing; }
 .tick { color: var(--done-tick); line-height: 0; }
 .tick svg { width: 14px; height: 14px; }
 .task-text { font-size: 14px; overflow-wrap: anywhere; cursor: text; }
@@ -475,7 +482,7 @@ dialog form { display: flex; flex-direction: column; gap: 12px; margin-block-sta
     var p = progressOf(it), done = p === MAX, lvl = p >= 4 ? "lvl-high" : (p >= 1 && p <= 2 ? "lvl-low" : "");
     return '<li class="task' + (done ? " done" : "") + '" data-key="' + k + '" data-i="' + i + '">' +
       '<div class="task-top">' +
-        '<button type="button" class="grip" draggable="true" data-act="grip" data-key="' + k + '" data-i="' + i + '" aria-label="Move ' + esc(it.text) + '. Use left and right arrow keys to move it a day.">' + ICON.grip + "</button>" +
+        '<button type="button" class="grip" data-act="grip" data-key="' + k + '" data-i="' + i + '" aria-label="Move ' + esc(it.text) + '. Drag it to another day, or use left and right arrow keys to move it a day.">' + ICON.grip + "</button>" +
         (done ? '<span class="tick">' + ICON.tick + '<span class="sr-only">Done</span></span>' : "") +
       "</div>" +
       '<span class="task-text" data-act="text" data-key="' + k + '" data-i="' + i + '">' + esc(it.text) + "</span>" +
@@ -777,33 +784,98 @@ dialog form { display: flex; flex-direction: column; gap: 12px; margin-block-sta
     moveTask(k, Number(el.getAttribute("data-i")), dayKey(d), true);
   });
 
-  // drag and drop (mouse)
+  // ---------- drag and drop (mouse, touch and pen, using Pointer Events) ----------
+  // Press the grip handle on a task and drag it onto another day's card.
   var dragging = null;
-  app.addEventListener("dragstart", function (ev) {
-    var el = ev.target.closest && ev.target.closest('[data-act="grip"]'); if (!el) return;
-    dragging = { k: el.getAttribute("data-key"), i: Number(el.getAttribute("data-i")) };
-    ev.dataTransfer.effectAllowed = "move";
-    ev.dataTransfer.setData("text/plain", dragging.k + "|" + dragging.i);
-    var li = el.closest(".task"); if (li) ev.dataTransfer.setDragImage(li, 12, 12);
-  });
-  app.addEventListener("dragover", function (ev) {
-    if (!dragging) return;
-    var day = ev.target.closest(".day"); if (!day) return;
-    ev.preventDefault(); ev.dataTransfer.dropEffect = "move";
+  var DRAG_THRESHOLD = 6;   // px of movement before a press becomes a drag
+  var EDGE = 80;            // px from the top/bottom of the screen where the page auto-scrolls
+
+  function dayAt(x, y) {
+    var el = document.elementFromPoint(x, y);
+    return el && el.closest ? el.closest(".day") : null;
+  }
+  function markOver(day) {
     app.querySelectorAll(".day.over").forEach(function (d) { if (d !== day) d.classList.remove("over"); });
-    day.classList.add("over");
-  });
-  app.addEventListener("dragleave", function (ev) {
-    var day = ev.target.closest && ev.target.closest(".day");
-    if (day && !day.contains(ev.relatedTarget)) day.classList.remove("over");
-  });
-  app.addEventListener("drop", function (ev) {
-    var day = ev.target.closest(".day"); if (!day || !dragging) return;
+    if (day) day.classList.add("over");
+  }
+  function positionGhost() {
+    var d = dragging; if (!d || !d.ghost) return;
+    var gw = d.ghost.offsetWidth;
+    d.ghost.style.left = Math.max(4, Math.min(d.x - d.dx, window.innerWidth - gw - 4)) + "px";
+    d.ghost.style.top = (d.y - d.dy) + "px";
+    markOver(dayAt(d.x, d.y));
+  }
+  function scrollLoop() {
+    var d = dragging; if (!d || !d.started) return;
+    var speed = 0;
+    if (d.y < EDGE) speed = -Math.ceil((EDGE - d.y) / 4);
+    else if (d.y > window.innerHeight - EDGE) speed = Math.ceil((d.y - (window.innerHeight - EDGE)) / 4);
+    if (speed) { window.scrollBy(0, speed); positionGhost(); }
+    d.raf = requestAnimationFrame(scrollLoop);
+  }
+  function startDrag() {
+    var d = dragging;
+    d.started = true;
+    var r = d.li.getBoundingClientRect();
+    d.ghost = d.li.cloneNode(true);
+    d.ghost.classList.add("task-ghost");
+    d.ghost.setAttribute("aria-hidden", "true");
+    d.ghost.style.width = r.width + "px";
+    document.body.appendChild(d.ghost);
+    d.li.classList.add("drag-src");
+    document.body.classList.add("is-dragging");
+    positionGhost();
+    d.raf = requestAnimationFrame(scrollLoop);
+  }
+  function endDrag(drop) {
+    var d = dragging; if (!d) return;
+    dragging = null;
+    cancelAnimationFrame(d.raf);
+    var day = drop && d.started ? dayAt(d.x, d.y) : null;
+    if (d.ghost) d.ghost.remove();
+    d.li.classList.remove("drag-src");
+    document.body.classList.remove("is-dragging");
+    markOver(null);
+    if (day) moveTask(d.k, d.i, day.getAttribute("data-day"), false);
+  }
+
+  app.addEventListener("pointerdown", function (ev) {
+    var grip = ev.target.closest && ev.target.closest('[data-act="grip"]');
+    if (!grip || dragging) return;
+    if (ev.pointerType === "mouse" && ev.button !== 0) return;
+    var li = grip.closest(".task"); if (!li) return;
+    var r = li.getBoundingClientRect();
+    dragging = {
+      k: grip.getAttribute("data-key"), i: Number(grip.getAttribute("data-i")),
+      pid: ev.pointerId, li: li, ghost: null, started: false, raf: 0,
+      sx: ev.clientX, sy: ev.clientY, x: ev.clientX, y: ev.clientY,
+      dx: ev.clientX - r.left, dy: ev.clientY - r.top
+    };
     ev.preventDefault();
-    var from = dragging; dragging = null;
-    moveTask(from.k, from.i, day.getAttribute("data-day"), false);
   });
-  app.addEventListener("dragend", function () { dragging = null; app.querySelectorAll(".day.over").forEach(function (d) { d.classList.remove("over"); }); });
+  window.addEventListener("pointermove", function (ev) {
+    var d = dragging; if (!d || ev.pointerId !== d.pid) return;
+    d.x = ev.clientX; d.y = ev.clientY;
+    if (!d.started) {
+      if (Math.abs(d.x - d.sx) + Math.abs(d.y - d.sy) < DRAG_THRESHOLD) return;
+      startDrag(); return;
+    }
+    ev.preventDefault();
+    positionGhost();
+  });
+  window.addEventListener("pointerup", function (ev) {
+    var d = dragging; if (!d || ev.pointerId !== d.pid) return;
+    d.x = ev.clientX; d.y = ev.clientY;
+    endDrag(true);
+  });
+  window.addEventListener("pointercancel", function (ev) {
+    if (dragging && ev.pointerId === dragging.pid) endDrag(false);
+  });
+  document.addEventListener("keydown", function (ev) { if (ev.key === "Escape" && dragging) endDrag(false); });
+  // stop the long-press context menu from interrupting a touch drag
+  app.addEventListener("contextmenu", function (ev) {
+    if (ev.target.closest && ev.target.closest('[data-act="grip"]')) ev.preventDefault();
+  });
 
   // ---------- clock & prompt ----------
   function busy() { return !!edTarget || ui.scheduleOpen || !!ui.menuFor || !!dragging || (document.activeElement && document.activeElement.type === "range"); }
@@ -818,6 +890,7 @@ dialog form { display: flex; flex-direction: column; gap: 12px; margin-block-sta
       var marker = c.todayKey + "@" + (ui.snoozeUntil || 0);
       if (ui.promptedFor !== marker) {
         ui.promptedFor = marker;
+        if (dragging) endDrag(false);
         if (edTarget) closeEditor("save");
         openWrite(c.targetKey, true);
         toast("Close of business is near — plan your top three for " + longDay(c.targetKey) + ".");
@@ -836,7 +909,6 @@ dialog form { display: flex; flex-direction: column; gap: 12px; margin-block-sta
   setInterval(tick, 15000);
 })();
 </script>
-</body>
 <script>
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", function () {
@@ -846,4 +918,5 @@ if ("serviceWorker" in navigator) {
   });
 }
 </script>
+</body>
 </html>
