@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "io.github.forwaqar.twa",
+        "sha256_cert_fingerprints": ["2F:8F:EA:04:73:C8:6C:7A:B4:43:10:ED:B7:40:A7:29:F8:36:EE:95:74:27:88:8F:8E:9D:58:01:86:2E:3A:3B"]
+      }
+    }]
